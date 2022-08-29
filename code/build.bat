@@ -14,8 +14,9 @@ REM -Zi - used to compile debug info into a seperate .pdb file
 REM Dumps the exe in the build folder at the root level of
 REM the project
 REM user32.lib - GUI library for windows
+REM Gdi32.lib - For windows Graphical Device Interface
 
-cl -Zi ..\code\win32_handmade.cpp user32.lib
+cl -Zi ..\code\win32_handmade.cpp user32.lib Gdi32.lib
 
 REM Pop the build dir so we go back to our original dir
 popd
