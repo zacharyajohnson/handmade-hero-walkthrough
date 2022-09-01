@@ -1,6 +1,76 @@
 #include <windows.h>
 
-LRESULT CALLBACK main_window_callback(HWND window,
+// Casey redefines static to use them for the specific
+// use cases to make it more clear
+// static(function variable) - persists between function calls
+// static(top level in file) - makes the variable accessible only in that file
+// static(function) - makes the function accessible only in that file
+#define local_persist static
+#define global_variable static
+#define internal static
+
+//TODO This is a global for now
+global_variable bool running;
+
+global_variable BITMAPINFO bitmap_info;
+global_variable void *bitmap_memory;
+global_variable HBITMAP bitmap_handle;
+global_variable HDC bitmap_device_context;
+
+// Everytime we resize the window,
+// we need to reallocate our bitmap memory
+// to match the new dimensions so it stays
+// in sync as we write it to the window.
+internal void win32_resize_DIB_section(int width, int height) {
+        //TODO Bulletproof this.
+        // Maybe don't free first, free after, then free first if that fails
+        if (bitmap_handle != NULL) {
+                DeleteObject(bitmap_handle);
+        }
+
+        if (bitmap_device_context == NULL) {
+                bitmap_device_context = CreateCompatibleDC(0);
+        }
+
+        bitmap_info.bmiHeader.biSize = sizeof(bitmap_info.bmiHeader);
+        bitmap_info.bmiHeader.biWidth = width;
+        bitmap_info.bmiHeader.biHeight = height;
+        bitmap_info.bmiHeader.biPlanes = 1;
+        bitmap_info.bmiHeader.biBitCount = 32;
+        bitmap_info.bmiHeader.biCompression = BI_RGB;
+        bitmap_info.bmiHeader.biSize = 0;
+        bitmap_info.bmiHeader.biXPelsPerMeter = 0;
+        bitmap_info.bmiHeader.biYPelsPerMeter = 0;
+        bitmap_info.bmiHeader.biClrUsed = 0;
+        bitmap_info.bmiHeader.biClrImportant = 0;
+
+        bitmap_handle = CreateDIBSection(
+                        bitmap_device_context, &bitmap_info,
+                        DIB_RGB_COLORS,
+                        &bitmap_memory,
+                        0, 0);
+
+
+
+}
+
+internal void win32_update_window(HDC device_context, int x, int y,
+                int width, int height)
+{
+        // Copies data from src(in this case, our bitmap memory,
+        // to a destination, (in this case, its the window)
+
+        StretchDIBits(device_context,
+                        x, y, width, height,
+                        x, y, width, height,
+                        bitmap_memory,
+                        &bitmap_info,
+                        DIB_RGB_COLORS,
+                        SRCCOPY);
+
+}
+
+LRESULT CALLBACK win32_main_window_callback(HWND window,
                 UINT message,
                 WPARAM w_param,
                 LPARAM l_param)
@@ -15,15 +85,24 @@ LRESULT CALLBACK main_window_callback(HWND window,
         switch(message) {
                 case WM_SIZE:
                         {
+                                // Get the drawable section
+                                // of our window;
+                                RECT client_rect;
+                                GetClientRect(window, &client_rect);
+                                int width = client_rect.right - client_rect.left;
+                                int height = client_rect.bottom - client_rect.top;
+                                win32_resize_DIB_section(width, height);
                                 OutputDebugStringA("WM_SIZE\n");
                         } break;
                 case WM_DESTROY:
                         {
-                                OutputDebugStringA("WM_DESTROY\n");
+                                //TODO Handle this as an error - recreate window?
+                                running = false;
                         } break;
                 case WM_CLOSE:
                         {
-                                OutputDebugStringA("WM_CLOSE\n");
+                                // TODO Handle this with a message to the user?
+                                running = false;
                         } break;
                 case WM_ACTIVATEAPP:
                         {
@@ -33,6 +112,8 @@ LRESULT CALLBACK main_window_callback(HWND window,
                         {
                                 PAINTSTRUCT paint;
                                 HDC device_context = BeginPaint(window, &paint);
+
+
                                 int x = paint.rcPaint.left;
                                 int y = paint.rcPaint.top;
 
@@ -40,7 +121,7 @@ LRESULT CALLBACK main_window_callback(HWND window,
                                 int height = paint.rcPaint.bottom - paint.rcPaint.top;
                                 int width = paint.rcPaint.right - paint.rcPaint.left;
 
-                                PatBlt(device_context, x, y, width, height, WHITENESS);
+                                win32_update_window(device_context, x, y, width, height);
                                 EndPaint(window, &paint);
                         } break;
                 default:
@@ -69,7 +150,7 @@ int CALLBACK WinMain(
 
         // The callback function Windows will call when
         // it wants us to take an action for it.
-        window_class.lpfnWndProc = main_window_callback;
+        window_class.lpfnWndProc = win32_main_window_callback;
 
         // Handle to the current instance of the application.
         // Used to identify the executable when it is loaded
@@ -89,11 +170,13 @@ int CALLBACK WinMain(
                                         0, 0, instance, 0);
 
                 if(window_handle != NULL) {
+                        running = true;
+
                         // Windows does not send messages.
                         // We have to extract them from the message queue
                         // and send it to our windows procedure manually.
                         MSG message;
-                        for(;;) {
+                        while(running) {
                                BOOL message_result =
                                        GetMessageA(&message, NULL, 0, 0);
                                if (message_result > 0) {
