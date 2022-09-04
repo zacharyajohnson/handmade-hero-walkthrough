@@ -20,27 +20,47 @@ typedef uint16_t uint16;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
 
+struct Win32OffscreenBuffer {
+        // NOTE: Pixels are always 32-bits wide,
+        // Memory Order BB GG RR xx
+        BITMAPINFO info;
+        void *memory;
+        int width;
+        int height;
+        int pitch;
+};
+
+struct Win32WindowDimension {
+        int width;
+        int height;
+};
+
 //TODO This is a global for now
-global_variable bool running;
+global_variable bool global_running;
+global_variable Win32OffscreenBuffer global_back_buffer;
 
-global_variable BITMAPINFO bitmap_info;
-global_variable void *bitmap_memory;
-global_variable int bitmap_width;
-global_variable int bitmap_height;
-global_variable int bytes_per_pixel = 4;
+internal Win32WindowDimension get_window_dimension(HWND window) {
+        Win32WindowDimension result;
 
-internal void render_weird_gradient(int blue_offset, int green_offset) {
+        // Get the drawable section
+        // of our window;
+        RECT client_rect;
+        GetClientRect(window, &client_rect);
+        result.width = client_rect.right - client_rect.left;
+        result.height = client_rect.bottom - client_rect.top;
 
-        int width = bitmap_width;
-        int height = bitmap_height;
+        return result;
+}
 
-        int pitch = width * bytes_per_pixel;
-        uint8 *row = (uint8 *)bitmap_memory;
+internal void render_weird_gradient(Win32OffscreenBuffer buffer,
+                int blue_offset, int green_offset) {
 
-        for (int y = 0; y < bitmap_height; y++) {
+        uint8 *row = (uint8 *)buffer.memory;
+
+        for (int y = 0; y < buffer.height; y++) {
 
                 uint32 *pixel = (uint32 *)row;
-                for (int x = 0; x < bitmap_width; x++) {
+                for (int x = 0; x < buffer.width; x++) {
                         // LITTLE ENDIAN ARCHITECTURE
                         // Pixel in memory: BB GG RR xx
                         // The byte in  the lowest memory address becomes
@@ -64,7 +84,7 @@ internal void render_weird_gradient(int blue_offset, int green_offset) {
                 // at the end. This effectivly means that
                 // the pitch for a row can be greater than
                 // the width of the image we are trying to draw.
-                row += pitch;
+                row += buffer.pitch;
         }
 }
 
@@ -76,46 +96,48 @@ internal void render_weird_gradient(int blue_offset, int green_offset) {
 // DIB - Device Independent Bitmap
 // Windows term for a bitmap that is not tied to
 // a particular device
-internal void win32_resize_DIB_section(int width, int height) {
+internal void win32_resize_DIB_section(Win32OffscreenBuffer *buffer,int width, int height) {
 
-        if (bitmap_memory != NULL) {
-                VirtualFree(bitmap_memory, 0, MEM_RELEASE);
+        if (buffer->memory != NULL) {
+                VirtualFree(buffer->memory, 0, MEM_RELEASE);
         }
 
-        bitmap_width = width;
-        bitmap_height = height;
-        bitmap_info.bmiHeader.biSize = sizeof(bitmap_info.bmiHeader);
-        bitmap_info.bmiHeader.biWidth = bitmap_width;
+        int bytes_per_pixel = 4;
+
+        buffer->width = width;
+        buffer->height = height;
+        buffer->info.bmiHeader.biSize = sizeof(buffer->info.bmiHeader);
+        buffer->info.bmiHeader.biWidth = buffer->width;
 
         // In BITMAPINFO - if biHeight is positive, it is a bottom-up
         // DIB. If it is negative, it is a top down DIB.
         // We want a top down DIB
-        bitmap_info.bmiHeader.biHeight = -bitmap_height;
-        bitmap_info.bmiHeader.biPlanes = 1;
+        buffer->info.bmiHeader.biHeight = -buffer->height;
+        buffer->info.bmiHeader.biPlanes = 1;
 
         // We only need 24 bits for our RGB
         // values, but on x86 architecture
         // 32 bit values are less costly
         // to read/write
-        bitmap_info.bmiHeader.biBitCount = 32;
-        bitmap_info.bmiHeader.biCompression = BI_RGB;
-        bitmap_info.bmiHeader.biSizeImage = 0;
-        bitmap_info.bmiHeader.biXPelsPerMeter = 0;
-        bitmap_info.bmiHeader.biYPelsPerMeter = 0;
-        bitmap_info.bmiHeader.biClrUsed = 0;
-        bitmap_info.bmiHeader.biClrImportant = 0;
+        buffer->info.bmiHeader.biBitCount = 32;
+        buffer->info.bmiHeader.biCompression = BI_RGB;
+        buffer->info.bmiHeader.biSizeImage = 0;
+        buffer->info.bmiHeader.biXPelsPerMeter = 0;
+        buffer->info.bmiHeader.biYPelsPerMeter = 0;
+        buffer->info.bmiHeader.biClrUsed = 0;
+        buffer->info.bmiHeader.biClrImportant = 0;
 
-        int bitmap_memory_size = width * height * bytes_per_pixel;
+        int bitmap_memory_size = buffer->width * buffer->height * bytes_per_pixel;
+        buffer->pitch = buffer->width * bytes_per_pixel;
 
-        bitmap_memory = VirtualAlloc(NULL, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+        buffer->memory = VirtualAlloc(NULL, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
 }
 
 
-internal void win32_update_window(HDC device_context, RECT *window_rect, int x, int y,
-                int width, int height)
+internal void win32_display_buffer_in_window(HDC device_context,
+                int window_width, int window_height,
+                Win32OffscreenBuffer buffer)
 {
-        int window_width = window_rect->right - window_rect->left;
-        int window_height = window_rect->bottom - window_rect->top;
         // Copies data from src(in this case, our bitmap memory,
         // to a destination, (in this case, its the window)
 
@@ -130,11 +152,16 @@ internal void win32_update_window(HDC device_context, RECT *window_rect, int x, 
 
         // Stride/Pitch - the number of bytes from one row of pixels in memory
         // to the next row of pixels in memory.
+        //
+        // This will also stretch the src dimensions(bitmap), to fit the destination
+        // dimension(window)
+        // TODO Aspect ratio correction
+        // TODO Play with stretch modes
         StretchDIBits(device_context,
-                        0, 0, bitmap_width, bitmap_height,
                         0, 0, window_width, window_height,
-                        bitmap_memory,
-                        &bitmap_info,
+                        0, 0, buffer.width, buffer.height,
+                        buffer.memory,
+                        &buffer.info,
                         DIB_RGB_COLORS,
                         SRCCOPY);
 
@@ -155,23 +182,16 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
         switch(message) {
                 case WM_SIZE:
                         {
-                                // Get the drawable section
-                                // of our window;
-                                RECT client_rect;
-                                GetClientRect(window, &client_rect);
-                                int width = client_rect.right - client_rect.left;
-                                int height = client_rect.bottom - client_rect.top;
-                                win32_resize_DIB_section(width, height);
                         } break;
                 case WM_DESTROY:
                         {
                                 //TODO Handle this as an error - recreate window?
-                                running = false;
+                                global_running = false;
                         } break;
                 case WM_CLOSE:
                         {
                                 // TODO Handle this with a message to the user?
-                                running = false;
+                                global_running = false;
                         } break;
                 case WM_ACTIVATEAPP:
                         {
@@ -182,18 +202,13 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
                                 PAINTSTRUCT paint;
                                 HDC device_context = BeginPaint(window, &paint);
 
+                                Win32WindowDimension window_dimension =
+                                        get_window_dimension(window);
 
-                                int x = paint.rcPaint.left;
-                                int y = paint.rcPaint.top;
+                                win32_display_buffer_in_window(device_context,
+                                                window_dimension.width, window_dimension.height,
+                                                global_back_buffer);
 
-
-                                int height = paint.rcPaint.bottom - paint.rcPaint.top;
-                                int width = paint.rcPaint.right - paint.rcPaint.left;
-
-                                RECT client_rect;
-                                GetClientRect(window, &client_rect);
-
-                                win32_update_window(device_context, &client_rect, x, y, width, height);
                                 EndPaint(window, &paint);
                         } break;
                 default:
@@ -220,6 +235,13 @@ int CALLBACK WinMain(
 
         WNDCLASS window_class = {0};
 
+        win32_resize_DIB_section(&global_back_buffer,
+                        1270, 1080);
+
+        // Redraw flags used to redraw the whole
+        // screen when resizing instead of just
+        // redrawing the part of the window that is new
+        window_class.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
         // The callback function Windows will call when
         // it wants us to take an action for it.
         window_class.lpfnWndProc = win32_main_window_callback;
@@ -242,7 +264,12 @@ int CALLBACK WinMain(
                                         0, 0, instance, 0);
 
                 if(window != NULL) {
-                        running = true;
+                        // NOTE: Since we specified CS_OWNDC, we can
+                        // jsut get one device context and use it forever
+                        // becuase we are not sharing it with anyone.
+                        HDC device_context = GetDC(window);
+
+                        global_running = true;
 
                         int blue_offset = 0;
                         int green_offset = 0;
@@ -250,34 +277,30 @@ int CALLBACK WinMain(
                         // We have to extract them from the message queue
                         // and send it to our windows procedure manually.
                         MSG message;
-                        while(running) {
+                        while(global_running) {
                                 while(PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
                                         // If windows decides to randomly kill our
                                         // process, quit
                                         if (message.message == WM_QUIT) {
-                                                running = false;
+                                                global_running = false;
                                         }
 
                                         TranslateMessage(&message);
                                         DispatchMessage(&message);
                                 }
 
-                                render_weird_gradient(blue_offset, green_offset);
+                                render_weird_gradient(global_back_buffer,
+                                                blue_offset, green_offset);
 
-                                HDC device_context = GetDC(window);
+                                Win32WindowDimension window_dimension =
+                                        get_window_dimension(window);
 
-                                RECT client_rect;
-                                GetClientRect(window, &client_rect);
-
-                                int window_width = client_rect.right - client_rect.left;
-                                int window_height = client_rect.bottom - client_rect.top;
-
-                                win32_update_window(device_context, &client_rect, 0,
-                                                0, window_width, window_height);
-                                ReleaseDC(window, device_context);
+                                win32_display_buffer_in_window(device_context,
+                                                window_dimension.width, window_dimension.height,
+                                                global_back_buffer);
 
                                 blue_offset++;
-                                green_offset+=2;
+                                green_offset++;
                         }
                 } else {
                         // TODO logging
