@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include <xinput.h>
 
 // Casey redefines static to use them for the specific
 // use cases to make it more clear
@@ -35,9 +36,55 @@ struct Win32WindowDimension {
         int height;
 };
 
+// Macro used to generate our function signatures for the Xinput functions
+// we want to dynamically pull in.
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+
+// Typedef a function signature to a name
+typedef X_INPUT_GET_STATE(x_input_get_state);
+typedef X_INPUT_SET_STATE(x_input_set_state);
+
+// Stub functions used if we can't
+// dynamically load a very of X input
+// so our app doesn't crash with a Null pointer.
+X_INPUT_GET_STATE(XInputGetStateStub) {
+        return 0;
+}
+
+X_INPUT_SET_STATE(XInputSetStateStub) {
+        return 0;
+}
+
+// Then, assign them to variables as function pointers.
+// Since XInput can have multiple versions across
+// different versions of microsoft, we cannot statically
+// link to them or the app will break on other machines
+// So, we load them dynamically on startup.
+global_variable x_input_get_state *XInputGetState_ = XInputGetStateStub;
+global_variable x_input_set_state *XInputSetState_ = XInputSetStateStub;
+
+// Create a mapping to our function pointers above.
+// This is so people can't call the xinput functions
+// in our code directly since we want to use
+// our dynamically loaded functions.
+#define XInputGetState XInputGetState_
+#define XInputSetState XInputSetState_
+
 //TODO This is a global for now
 global_variable bool global_running;
 global_variable Win32OffscreenBuffer global_back_buffer;
+
+internal void win32_load_x_input(void) {
+        // Load the x input library
+        // 1_3 is very common in machines
+        HMODULE x_input_library = LoadLibraryA("xinput1_3.dll");
+
+        if (x_input_library != NULL) {
+                XInputGetState = (x_input_get_state *)GetProcAddress(x_input_library, "XInputGetState");
+                XInputSetState = (x_input_set_state *)GetProcAddress(x_input_library, "XInputSetState");
+        }
+}
 
 internal Win32WindowDimension get_window_dimension(HWND window) {
         Win32WindowDimension result;
@@ -52,15 +99,15 @@ internal Win32WindowDimension get_window_dimension(HWND window) {
         return result;
 }
 
-internal void render_weird_gradient(Win32OffscreenBuffer buffer,
+internal void render_weird_gradient(Win32OffscreenBuffer *buffer,
                 int blue_offset, int green_offset) {
 
-        uint8 *row = (uint8 *)buffer.memory;
+        uint8 *row = (uint8 *)buffer->memory;
 
-        for (int y = 0; y < buffer.height; y++) {
+        for (int y = 0; y < buffer->height; y++) {
 
                 uint32 *pixel = (uint32 *)row;
-                for (int x = 0; x < buffer.width; x++) {
+                for (int x = 0; x < buffer->width; x++) {
                         // LITTLE ENDIAN ARCHITECTURE
                         // Pixel in memory: BB GG RR xx
                         // The byte in  the lowest memory address becomes
@@ -84,7 +131,7 @@ internal void render_weird_gradient(Win32OffscreenBuffer buffer,
                 // at the end. This effectivly means that
                 // the pitch for a row can be greater than
                 // the width of the image we are trying to draw.
-                row += buffer.pitch;
+                row += buffer->pitch;
         }
 }
 
@@ -136,7 +183,7 @@ internal void win32_resize_DIB_section(Win32OffscreenBuffer *buffer,int width, i
 
 internal void win32_display_buffer_in_window(HDC device_context,
                 int window_width, int window_height,
-                Win32OffscreenBuffer buffer)
+                Win32OffscreenBuffer *buffer)
 {
         // Copies data from src(in this case, our bitmap memory,
         // to a destination, (in this case, its the window)
@@ -159,9 +206,9 @@ internal void win32_display_buffer_in_window(HDC device_context,
         // TODO Play with stretch modes
         StretchDIBits(device_context,
                         0, 0, window_width, window_height,
-                        0, 0, buffer.width, buffer.height,
-                        buffer.memory,
-                        &buffer.info,
+                        0, 0, buffer->width, buffer->height,
+                        buffer->memory,
+                        &buffer->info,
                         DIB_RGB_COLORS,
                         SRCCOPY);
 
@@ -180,9 +227,6 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
         // windows can pass to us to handle such as
         // changing window size and closing the window
         switch(message) {
-                case WM_SIZE:
-                        {
-                        } break;
                 case WM_DESTROY:
                         {
                                 //TODO Handle this as an error - recreate window?
@@ -192,6 +236,41 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
                         {
                                 // TODO Handle this with a message to the user?
                                 global_running = false;
+                        } break;
+                case WM_SYSKEYDOWN:
+                case WM_SYSKEYUP:
+                case WM_KEYDOWN:
+                case WM_KEYUP:
+                        {
+                                uint32 vk_code = w_param;
+                                bool was_down = ((l_param & (1 << 30)) != 0);
+                                bool is_down = ((l_param & (1 << 31)) == 0);
+                                if (was_down != is_down) {
+                                        if (vk_code == 'W') {
+                                        } else if (vk_code == 'A') {
+
+                                        } else if (vk_code == 'S') {
+
+                                        } else if (vk_code == 'D') {
+
+                                        } else if (vk_code == 'Q') {
+
+                                        } else if (vk_code == 'E') {
+
+                                        } else if (vk_code == VK_UP) {
+
+                                        } else if (vk_code == VK_LEFT) {
+
+                                        } else if (vk_code == VK_DOWN) {
+
+                                        } else if (vk_code == VK_RIGHT) {
+
+                                        } else if (vk_code == VK_ESCAPE) {
+
+                                        } else if (vk_code == VK_SPACE) {
+
+                                        }
+                                }
                         } break;
                 case WM_ACTIVATEAPP:
                         {
@@ -207,13 +286,12 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
 
                                 win32_display_buffer_in_window(device_context,
                                                 window_dimension.width, window_dimension.height,
-                                                global_back_buffer);
+                                                &global_back_buffer);
 
                                 EndPaint(window, &paint);
                         } break;
                 default:
                         {
-                                OutputDebugStringA("Default\n");
                                 // We don't care about any other messages, so let windows
                                 // default window callback handle them.
                                 result = DefWindowProc(window, message, w_param, l_param);
@@ -232,11 +310,12 @@ int CALLBACK WinMain(
                 int show_cmd
                 )
 {
+        win32_load_x_input();
 
-        WNDCLASS window_class = {0};
+        WNDCLASSA window_class = {0};
 
         win32_resize_DIB_section(&global_back_buffer,
-                        1270, 1080);
+                        1280, 720);
 
         // Redraw flags used to redraw the whole
         // screen when resizing instead of just
@@ -273,11 +352,12 @@ int CALLBACK WinMain(
 
                         int blue_offset = 0;
                         int green_offset = 0;
-                        // Windows does not send messages.
-                        // We have to extract them from the message queue
-                        // and send it to our windows procedure manually.
-                        MSG message;
+
                         while(global_running) {
+                                // Windows does not send messages.
+                                // We have to extract them from the message queue
+                                // and send it to our windows procedure manually.
+                                MSG message;
                                 while(PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
                                         // If windows decides to randomly kill our
                                         // process, quit
@@ -289,7 +369,46 @@ int CALLBACK WinMain(
                                         DispatchMessage(&message);
                                 }
 
-                                render_weird_gradient(global_back_buffer,
+                                // XUSER_MAX_COUNT - The number of xbox controllers
+                                // that can be used at once(Usually 4)
+                                // TODO Should we poll this more frequently?
+                                for (DWORD controller_index = 0;
+                                                controller_index < XUSER_MAX_COUNT;
+                                                controller_index++)
+                                {
+                                        XINPUT_STATE controller_state;
+
+                                        if (XInputGetState(controller_index, &controller_state)
+                                                        == ERROR_SUCCESS)
+                                        {
+                                                // If the controller is active get the state of it
+                                                XINPUT_GAMEPAD *gamepad = &controller_state.Gamepad;
+
+                                                bool up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                                                bool down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                                                bool left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                                                bool right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                                                bool start = gamepad->wButtons & XINPUT_GAMEPAD_START;
+                                                bool back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
+                                                bool left_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+                                                bool right_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                                                bool a_button = gamepad->wButtons & XINPUT_GAMEPAD_A;
+                                                bool b_button = gamepad->wButtons & XINPUT_GAMEPAD_B;
+                                                bool x_button = gamepad->wButtons & XINPUT_GAMEPAD_X;
+                                                bool y_button = gamepad->wButtons & XINPUT_GAMEPAD_Y;
+
+                                                int16 left_stick_x = gamepad->sThumbLX;
+                                                int16 left_stick_y = gamepad->sThumbLY;
+
+                                                blue_offset += left_stick_x >> 12;
+                                                green_offset += left_stick_y >> 12;
+
+                                        } else {
+                                                // NOTE: the controller is not avaliable
+                                        }
+                                }
+
+                                render_weird_gradient(&global_back_buffer,
                                                 blue_offset, green_offset);
 
                                 Win32WindowDimension window_dimension =
@@ -297,10 +416,8 @@ int CALLBACK WinMain(
 
                                 win32_display_buffer_in_window(device_context,
                                                 window_dimension.width, window_dimension.height,
-                                                global_back_buffer);
+                                                &global_back_buffer);
 
-                                blue_offset++;
-                                green_offset++;
                         }
                 } else {
                         // TODO logging
