@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <xinput.h>
+#include <dsound.h>
 
 // Casey redefines static to use them for the specific
 // use cases to make it more clear
@@ -15,6 +16,7 @@ typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
 typedef int64_t int64;
+typedef int32 bool32;
 
 typedef uint8_t uint8;
 typedef uint16_t uint16;
@@ -41,6 +43,7 @@ struct Win32WindowDimension {
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
 
+
 // Typedef a function signature to a name
 typedef X_INPUT_GET_STATE(x_input_get_state);
 typedef X_INPUT_SET_STATE(x_input_set_state);
@@ -49,11 +52,11 @@ typedef X_INPUT_SET_STATE(x_input_set_state);
 // dynamically load a very of X input
 // so our app doesn't crash with a Null pointer.
 X_INPUT_GET_STATE(XInputGetStateStub) {
-        return 0;
+        return ERROR_DEVICE_NOT_CONNECTED;
 }
 
 X_INPUT_SET_STATE(XInputSetStateStub) {
-        return 0;
+        return ERROR_DEVICE_NOT_CONNECTED;
 }
 
 // Then, assign them to variables as function pointers.
@@ -71,18 +74,127 @@ global_variable x_input_set_state *XInputSetState_ = XInputSetStateStub;
 #define XInputGetState XInputGetState_
 #define XInputSetState XInputSetState_
 
+// Same idea as Xinput
+#define DIRECT_SOUND_CREATE(name) HRESULT WINAPI name(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter)
+typedef DIRECT_SOUND_CREATE(direct_sound_create);
+
+
 //TODO This is a global for now
 global_variable bool global_running;
 global_variable Win32OffscreenBuffer global_back_buffer;
 
 internal void win32_load_x_input(void) {
         // Load the x input library
-        // 1_3 is very common in machines
-        HMODULE x_input_library = LoadLibraryA("xinput1_3.dll");
+        // TODO Test this on Windows 8
+        // Version 1.4 or xinput is the only version
+        // avaliable on Windows 8, so we try and load that.
+        HMODULE x_input_library = LoadLibraryA("xinput1_4.dll");
+
+        // If we don't have version 1.4, try and get version 1.3
+        if (x_input_library == NULL) {
+                // 1_3 is very common on Windows 7
+                HMODULE x_input_library = LoadLibraryA("xinput1_3.dll");
+        }
 
         if (x_input_library != NULL) {
+                // If we can load the dll, but can't find the functions we
+                // want, set the function pointers to the stub methods
+                // so we don't get a null pointer.
                 XInputGetState = (x_input_get_state *)GetProcAddress(x_input_library, "XInputGetState");
+
+                if (XInputGetState == NULL) {
+                        XInputGetState = XInputGetStateStub;
+                }
+
                 XInputSetState = (x_input_set_state *)GetProcAddress(x_input_library, "XInputSetState");
+                if (XInputSetState == NULL) {
+                        XInputSetState = XInputSetStateStub;
+                }
+
+                // TODO Diagnostic
+        } else {
+                // TODO: Diagnostic
+        }
+}
+
+internal void win32_init_direct_sound(HWND window, int32 buffer_size, int32 samples_per_second) {
+        // NOTE: Load the library
+        HMODULE direct_sound_library = LoadLibraryA("dsound.dll");
+
+        if (direct_sound_library != NULL) {
+
+                direct_sound_create *DirectSoundCreate =
+                        (direct_sound_create *)GetProcAddress(direct_sound_library, "DirectSoundCreate");
+
+                // Object used when SoundCreate is successful
+                // TODO: Double-check this works on XP - DirectSound 8 or 7???
+                LPDIRECTSOUND direct_sound;
+
+                // If we get a method back from the library and the
+                // call was successful
+                if (DirectSoundCreate != NULL && SUCCEEDED(DirectSoundCreate(NULL, &direct_sound, NULL))) {
+
+                        WAVEFORMATEX wave_format = {};
+                        wave_format.wFormatTag = WAVE_FORMAT_PCM;
+                        wave_format.nChannels = 2;
+                        wave_format.wBitsPerSample = 16;
+                        wave_format.nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8;
+                        wave_format.nSamplesPerSec = samples_per_second;
+                        wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
+                        wave_format.cbSize = 0;
+
+                        // Allows us to set sound buffer format for primary buffer
+                        if(SUCCEEDED(direct_sound->SetCooperativeLevel(window, DSSCL_PRIORITY))) {
+                                DSBUFFERDESC buffer_desc = {};
+                                buffer_desc.dwSize = sizeof(buffer_desc);
+                                buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+                                buffer_desc.dwBufferBytes = 0;
+
+                                // NOTE: "Create" a primary buffer
+                                // Holdover from original versions where
+                                // you wrote directly into a buffer that
+                                // represented the sound card.
+                                // We only now need to set the format for the device.
+                                LPDIRECTSOUNDBUFFER primary_buffer;
+
+                                if(SUCCEEDED(direct_sound->CreateSoundBuffer(&buffer_desc, &primary_buffer, 0))) {
+
+                                        if(SUCCEEDED(primary_buffer->SetFormat(&wave_format))) {
+
+                                        } else {
+                                                //TODO: Diagnostic
+                                        }
+
+                                } else {
+                                       // TODO: Diagnostic
+                                }
+
+                        } else {
+                                //TODO: Diagnostic
+                        }
+
+                        // NOTE: DBSCAPS_GETCURRENTPOSITION2
+                        // "Create" a secondary buffer.
+                        // This is the actual buffer we will write to.
+                        DSBUFFERDESC buffer_desc = {};
+                        buffer_desc.dwSize = sizeof(buffer_desc);
+                        buffer_desc.dwBufferBytes = buffer_size;
+                        buffer_desc.lpwfxFormat = &wave_format;
+
+                        LPDIRECTSOUNDBUFFER secondary_buffer;
+
+                        if(SUCCEEDED(direct_sound->CreateSoundBuffer(&buffer_desc, &secondary_buffer, 0))) {
+
+                        } else {
+                               // TODO: Diagnostic
+                        }
+
+                } else {
+                        // TODO: Diagnostic
+                }
+
+        } else {
+                // TODO: Diagnostic
         }
 }
 
@@ -177,7 +289,7 @@ internal void win32_resize_DIB_section(Win32OffscreenBuffer *buffer,int width, i
         int bitmap_memory_size = buffer->width * buffer->height * bytes_per_pixel;
         buffer->pitch = buffer->width * bytes_per_pixel;
 
-        buffer->memory = VirtualAlloc(NULL, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+        buffer->memory = VirtualAlloc(NULL, bitmap_memory_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
 
@@ -271,6 +383,12 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
 
                                         }
                                 }
+
+                                bool alt_key_was_down = ((l_param & (1 << 29)) != 0);
+                                if ((vk_code == VK_F4) && alt_key_was_down) {
+                                        global_running = false;
+                                }
+
                         } break;
                 case WM_ACTIVATEAPP:
                         {
@@ -343,6 +461,10 @@ int CALLBACK WinMain(
                                         0, 0, instance, 0);
 
                 if(window != NULL) {
+                        // Load direct sound dlls and setup
+                        // primary/secondary sound buffers
+                        win32_init_direct_sound(window,48000*sizeof(int16)* 2,48000);
+
                         // NOTE: Since we specified CS_OWNDC, we can
                         // jsut get one device context and use it forever
                         // becuase we are not sharing it with anyone.
