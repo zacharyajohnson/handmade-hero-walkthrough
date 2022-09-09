@@ -82,7 +82,7 @@ typedef DIRECT_SOUND_CREATE(direct_sound_create);
 //TODO This is a global for now
 global_variable bool global_running;
 global_variable Win32OffscreenBuffer global_back_buffer;
-
+global_variable LPDIRECTSOUNDBUFFER global_secondary_sound_buffer;
 internal void win32_load_x_input(void) {
         // Load the x input library
         // TODO Test this on Windows 8
@@ -181,9 +181,7 @@ internal void win32_init_direct_sound(HWND window, int32 buffer_size, int32 samp
                         buffer_desc.dwBufferBytes = buffer_size;
                         buffer_desc.lpwfxFormat = &wave_format;
 
-                        LPDIRECTSOUNDBUFFER secondary_buffer;
-
-                        if(SUCCEEDED(direct_sound->CreateSoundBuffer(&buffer_desc, &secondary_buffer, 0))) {
+                        if(SUCCEEDED(direct_sound->CreateSoundBuffer(&buffer_desc, &global_secondary_sound_buffer, 0))) {
 
                         } else {
                                // TODO: Diagnostic
@@ -461,19 +459,33 @@ int CALLBACK WinMain(
                                         0, 0, instance, 0);
 
                 if(window != NULL) {
+
+                        global_running = true;
+
+                        // NOTE: Graphics test
+                        int blue_offset = 0;
+                        int green_offset = 0;
+
+                        // NOTE: Sound test
+                        int samples_per_second = 48000;
+                        int bytes_per_sample = sizeof(int16)* 2;
+                        int tone_hertz = 256;
+                        int tone_volume = 3000;
+                        uint32 running_sample_index = 0;
+                        int square_wave_period = samples_per_second/tone_hertz;
+                        int half_square_wave_period = square_wave_period/2;
+                        int secondary_buffer_size = samples_per_second * bytes_per_sample;
+
                         // Load direct sound dlls and setup
                         // primary/secondary sound buffers
-                        win32_init_direct_sound(window,48000*sizeof(int16)* 2,48000);
+                        win32_init_direct_sound(window, secondary_buffer_size, samples_per_second);
+
+                        bool sound_is_playing = false;
 
                         // NOTE: Since we specified CS_OWNDC, we can
                         // jsut get one device context and use it forever
                         // becuase we are not sharing it with anyone.
                         HDC device_context = GetDC(window);
-
-                        global_running = true;
-
-                        int blue_offset = 0;
-                        int green_offset = 0;
 
                         while(global_running) {
                                 // Windows does not send messages.
@@ -533,6 +545,94 @@ int CALLBACK WinMain(
                                 render_weird_gradient(&global_back_buffer,
                                                 blue_offset, green_offset);
 
+                                // NOTE: DirectSound output test
+                                // Locks the sound buffer
+                                // and returns the regions of memory we can write
+                                // to. There are two regions just in case
+                                // the first region that is locked is not big
+                                // enough and hits the end of the sound memory.
+                                // If that is the case, we loop back to the
+                                // beginning of the sound buffer and that
+                                // region of memory is stored in the second
+                                // region
+
+                                // Our sound buffer is sterio, which
+                                // means dual channels. Each channel
+                                // takes a int16 for the sample
+                                // The buffer has
+                                // the format: LEFT RIGHT LEFT RIGHT LEFT RIGHT
+                                // where LEFT and RIGHT are a sample.
+                                // To make sense for sterio, we want to
+                                // handle one [LEFT RIGHT] group as a single
+                                // sample
+                                DWORD write_cursor;
+                                DWORD play_cursor;
+                                if (SUCCEEDED(global_secondary_sound_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
+
+                                        VOID *region1;
+                                        DWORD region1_size;
+                                        VOID *region2;
+                                        DWORD region2_size;
+
+                                        DWORD byte_to_lock = (running_sample_index * bytes_per_sample) % secondary_buffer_size;
+                                        DWORD bytes_to_write;
+
+                                        if (byte_to_lock == play_cursor) {
+                                                bytes_to_write = secondary_buffer_size;
+                                        } else if (byte_to_lock > play_cursor) {
+                                                bytes_to_write = (secondary_buffer_size - byte_to_lock);
+                                                bytes_to_write += play_cursor;
+                                        } else {
+                                                bytes_to_write = (play_cursor - byte_to_lock);
+                                        }
+
+                                        if(SUCCEEDED(global_secondary_sound_buffer->Lock(
+                                                        byte_to_lock,
+                                                        bytes_to_write,
+                                                        &region1, &region1_size,
+                                                        &region2, &region2_size, 0)))
+                                        {
+
+                                                // TODO: assert the region1/region2 size is valid
+                                                int16 *sample_out = (int16 *) region1;
+
+                                                DWORD region1_sample_count = region1_size/bytes_per_sample;
+                                                for (DWORD sample_index = 0; sample_index < region1_sample_count; sample_index++) {
+                                                        int16 sample_value = ((running_sample_index / half_square_wave_period) % 2) ? tone_volume: -tone_volume;
+                                                        *sample_out = sample_value;
+                                                        sample_out++;
+
+                                                        *sample_out = sample_value;
+                                                        sample_out++;
+                                                        running_sample_index++;
+                                                }
+
+                                                if (region2 != NULL) {
+                                                        DWORD region2_sample_count = region2_size/bytes_per_sample;
+                                                        sample_out = (int16 *) region2;
+
+                                                        for (DWORD sample_index = 0; sample_index < region2_sample_count; sample_index++) {
+                                                                int16 sample_value = ((running_sample_index / half_square_wave_period) % 2) ? tone_volume: -tone_volume;
+                                                                *sample_out = sample_value;
+                                                                sample_out++;
+
+                                                                *sample_out = sample_value;
+                                                                sample_out++;
+
+                                                                running_sample_index++;
+                                                        }
+                                                }
+
+                                                global_secondary_sound_buffer->Unlock(region1, region1_size, region2, region2_size);
+                                        }
+                                }
+
+                                if (!sound_is_playing) {
+                                        // Start playing of sound buffer
+                                        global_secondary_sound_buffer->Play(0,0, DSBPLAY_LOOPING);
+                                        sound_is_playing = true;
+                                }
+
                                 Win32WindowDimension window_dimension =
                                         get_window_dimension(window);
 
@@ -548,8 +648,6 @@ int CALLBACK WinMain(
         } else {
                 //TODO Logging
         }
-
-
 
         return(0);
 }
