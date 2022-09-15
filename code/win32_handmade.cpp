@@ -3,6 +3,9 @@
 #include <xinput.h>
 #include <dsound.h>
 
+// TODO Implement sine ourselves
+#include <math.h>
+
 // Casey redefines static to use them for the specific
 // use cases to make it more clear
 // static(function variable) - persists between function calls
@@ -11,6 +14,8 @@
 #define local_persist static
 #define global_variable static
 #define internal static
+
+#define Pi32 3.14159265359f
 
 typedef int8_t int8;
 typedef int16_t int16;
@@ -22,6 +27,22 @@ typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
+typedef float real32;
+typedef double real64;
+
+struct Win32SoundOutput {
+        // NOTE: Sound test
+        int samples_per_second;
+        int bytes_per_sample;
+        int tone_hertz;
+        int tone_volume;
+        uint32 running_sample_index;
+        int wave_period;
+        int secondary_buffer_size;
+        real32 t_sine;
+        int latency_sample_count;
+};
 
 struct Win32OffscreenBuffer {
         // NOTE: Pixels are always 32-bits wide,
@@ -80,9 +101,63 @@ typedef DIRECT_SOUND_CREATE(direct_sound_create);
 
 
 //TODO This is a global for now
-global_variable bool global_running;
+global_variable bool32 global_running;
 global_variable Win32OffscreenBuffer global_back_buffer;
 global_variable LPDIRECTSOUNDBUFFER global_secondary_sound_buffer;
+
+internal void win32_fill_sound_buffer(Win32SoundOutput *sound_output, DWORD byte_to_lock, DWORD bytes_to_write) {
+        VOID *region1;
+        DWORD region1_size;
+        VOID *region2;
+        DWORD region2_size;
+
+        if(SUCCEEDED(global_secondary_sound_buffer->Lock(
+                        byte_to_lock,
+                        bytes_to_write,
+                        &region1, &region1_size,
+                        &region2, &region2_size, 0)))
+        {
+
+                // TODO: assert the region1/region2 size is valid
+                int16 *sample_out = (int16 *) region1;
+
+                // TODO: Collapse these two loops
+                DWORD region1_sample_count = region1_size/sound_output->bytes_per_sample;
+                for (DWORD sample_index = 0; sample_index < region1_sample_count; sample_index++) {
+                        real32 sine_value = sinf(sound_output->t_sine);
+                        int16 sample_value = (int16) (sine_value * sound_output->tone_volume);
+
+                        *sample_out = sample_value;
+                        sample_out++;
+
+                        *sample_out = sample_value;
+                        sample_out++;
+                        sound_output->t_sine += 2.0f * Pi32 * (real32)1.0 / (real32)sound_output->wave_period;
+                        sound_output->running_sample_index++;
+                }
+
+                if (region2 != NULL) {
+                        DWORD region2_sample_count = region2_size/sound_output->bytes_per_sample;
+                        sample_out = (int16 *) region2;
+
+                        for (DWORD sample_index = 0; sample_index < region2_sample_count; sample_index++) {
+                                real32 sine_value = sinf(sound_output->t_sine);
+                                int16 sample_value = (int16) (sine_value * sound_output->tone_volume);
+
+                                *sample_out = sample_value;
+                                sample_out++;
+
+                                *sample_out = sample_value;
+                                sample_out++;
+                                sound_output->t_sine += 2.0f * Pi32 * (real32)1.0 / (real32)sound_output->wave_period;
+                                sound_output->running_sample_index++;
+                        }
+                }
+
+                global_secondary_sound_buffer->Unlock(region1, region1_size, region2, region2_size);
+        }
+}
+
 internal void win32_load_x_input(void) {
         // Load the x input library
         // TODO Test this on Windows 8
@@ -90,10 +165,15 @@ internal void win32_load_x_input(void) {
         // avaliable on Windows 8, so we try and load that.
         HMODULE x_input_library = LoadLibraryA("xinput1_4.dll");
 
-        // If we don't have version 1.4, try and get version 1.3
+        // Try and get different versions of xinput
+        // if 1.4 doesn't exist
+        if (x_input_library == NULL) {
+                x_input_library = LoadLibraryA("xinput9_1_0.dll");
+        }
+
         if (x_input_library == NULL) {
                 // 1_3 is very common on Windows 7
-                HMODULE x_input_library = LoadLibraryA("xinput1_3.dll");
+                x_input_library = LoadLibraryA("xinput1_3.dll");
         }
 
         if (x_input_library != NULL) {
@@ -353,8 +433,8 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
                 case WM_KEYUP:
                         {
                                 uint32 vk_code = w_param;
-                                bool was_down = ((l_param & (1 << 30)) != 0);
-                                bool is_down = ((l_param & (1 << 31)) == 0);
+                                bool32 was_down = ((l_param & (1 << 30)) != 0);
+                                bool32 is_down = ((l_param & (1 << 31)) == 0);
                                 if (was_down != is_down) {
                                         if (vk_code == 'W') {
                                         } else if (vk_code == 'A') {
@@ -382,7 +462,7 @@ LRESULT CALLBACK win32_main_window_callback(HWND window,
                                         }
                                 }
 
-                                bool alt_key_was_down = ((l_param & (1 << 29)) != 0);
+                                bool32 alt_key_was_down = ((l_param & (1 << 29)) != 0);
                                 if ((vk_code == VK_F4) && alt_key_was_down) {
                                         global_running = false;
                                 }
@@ -467,20 +547,22 @@ int CALLBACK WinMain(
                         int green_offset = 0;
 
                         // NOTE: Sound test
-                        int samples_per_second = 48000;
-                        int bytes_per_sample = sizeof(int16)* 2;
-                        int tone_hertz = 256;
-                        int tone_volume = 3000;
-                        uint32 running_sample_index = 0;
-                        int square_wave_period = samples_per_second/tone_hertz;
-                        int half_square_wave_period = square_wave_period/2;
-                        int secondary_buffer_size = samples_per_second * bytes_per_sample;
+                        Win32SoundOutput sound_output = {};
+                        sound_output.samples_per_second = 48000;
+                        sound_output.bytes_per_sample = sizeof(int16)* 2;
+                        sound_output.tone_hertz = 256;
+                        sound_output.tone_volume = 3000;
+                        sound_output.running_sample_index = 0;
+                        sound_output.wave_period = sound_output.samples_per_second/sound_output.tone_hertz;
+                        sound_output.secondary_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
+                        sound_output.latency_sample_count = sound_output.samples_per_second / 15;
 
                         // Load direct sound dlls and setup
                         // primary/secondary sound buffers
-                        win32_init_direct_sound(window, secondary_buffer_size, samples_per_second);
+                        win32_init_direct_sound(window, sound_output.secondary_buffer_size, sound_output.samples_per_second);
 
-                        bool sound_is_playing = false;
+                        win32_fill_sound_buffer(&sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
+                        global_secondary_sound_buffer->Play(0,0, DSBPLAY_LOOPING);
 
                         // NOTE: Since we specified CS_OWNDC, we can
                         // jsut get one device context and use it forever
@@ -518,25 +600,27 @@ int CALLBACK WinMain(
                                                 // If the controller is active get the state of it
                                                 XINPUT_GAMEPAD *gamepad = &controller_state.Gamepad;
 
-                                                bool up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
-                                                bool down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
-                                                bool left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
-                                                bool right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
-                                                bool start = gamepad->wButtons & XINPUT_GAMEPAD_START;
-                                                bool back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
-                                                bool left_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
-                                                bool right_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
-                                                bool a_button = gamepad->wButtons & XINPUT_GAMEPAD_A;
-                                                bool b_button = gamepad->wButtons & XINPUT_GAMEPAD_B;
-                                                bool x_button = gamepad->wButtons & XINPUT_GAMEPAD_X;
-                                                bool y_button = gamepad->wButtons & XINPUT_GAMEPAD_Y;
+                                                bool32 up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                                                bool32 down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                                                bool32 left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                                                bool32 right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                                                bool32 start = gamepad->wButtons & XINPUT_GAMEPAD_START;
+                                                bool32 back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
+                                                bool32 left_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+                                                bool32 right_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                                                bool32 a_button = gamepad->wButtons & XINPUT_GAMEPAD_A;
+                                                bool32 b_button = gamepad->wButtons & XINPUT_GAMEPAD_B;
+                                                bool32 x_button = gamepad->wButtons & XINPUT_GAMEPAD_X;
+                                                bool32 y_button = gamepad->wButtons & XINPUT_GAMEPAD_Y;
 
                                                 int16 left_stick_x = gamepad->sThumbLX;
                                                 int16 left_stick_y = gamepad->sThumbLY;
 
-                                                blue_offset += left_stick_x >> 12;
-                                                green_offset += left_stick_y >> 12;
+                                                blue_offset += left_stick_x / 4096;
+                                                green_offset += left_stick_y / 4096;
 
+                                                sound_output.tone_hertz = 512 + (int)(256.0f * ((real32)left_stick_y / 30000.0f));
+                                                sound_output.wave_period = sound_output.samples_per_second / sound_output.tone_hertz;
                                         } else {
                                                 // NOTE: the controller is not avaliable
                                         }
@@ -569,68 +653,20 @@ int CALLBACK WinMain(
                                 DWORD play_cursor;
                                 if (SUCCEEDED(global_secondary_sound_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
 
-                                        VOID *region1;
-                                        DWORD region1_size;
-                                        VOID *region2;
-                                        DWORD region2_size;
 
-                                        DWORD byte_to_lock = (running_sample_index * bytes_per_sample) % secondary_buffer_size;
+                                        DWORD byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
                                         DWORD bytes_to_write;
 
-                                        if (byte_to_lock == play_cursor) {
-                                                bytes_to_write = secondary_buffer_size;
-                                        } else if (byte_to_lock > play_cursor) {
-                                                bytes_to_write = (secondary_buffer_size - byte_to_lock);
-                                                bytes_to_write += play_cursor;
+                                        DWORD target_cursor = (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample))
+                                                % sound_output.secondary_buffer_size;
+                                        if (byte_to_lock > target_cursor) {
+                                                bytes_to_write = (sound_output.secondary_buffer_size - byte_to_lock);
+                                                bytes_to_write += target_cursor;
                                         } else {
-                                                bytes_to_write = (play_cursor - byte_to_lock);
+                                                bytes_to_write = (target_cursor - byte_to_lock);
                                         }
 
-                                        if(SUCCEEDED(global_secondary_sound_buffer->Lock(
-                                                        byte_to_lock,
-                                                        bytes_to_write,
-                                                        &region1, &region1_size,
-                                                        &region2, &region2_size, 0)))
-                                        {
-
-                                                // TODO: assert the region1/region2 size is valid
-                                                int16 *sample_out = (int16 *) region1;
-
-                                                DWORD region1_sample_count = region1_size/bytes_per_sample;
-                                                for (DWORD sample_index = 0; sample_index < region1_sample_count; sample_index++) {
-                                                        int16 sample_value = ((running_sample_index / half_square_wave_period) % 2) ? tone_volume: -tone_volume;
-                                                        *sample_out = sample_value;
-                                                        sample_out++;
-
-                                                        *sample_out = sample_value;
-                                                        sample_out++;
-                                                        running_sample_index++;
-                                                }
-
-                                                if (region2 != NULL) {
-                                                        DWORD region2_sample_count = region2_size/bytes_per_sample;
-                                                        sample_out = (int16 *) region2;
-
-                                                        for (DWORD sample_index = 0; sample_index < region2_sample_count; sample_index++) {
-                                                                int16 sample_value = ((running_sample_index / half_square_wave_period) % 2) ? tone_volume: -tone_volume;
-                                                                *sample_out = sample_value;
-                                                                sample_out++;
-
-                                                                *sample_out = sample_value;
-                                                                sample_out++;
-
-                                                                running_sample_index++;
-                                                        }
-                                                }
-
-                                                global_secondary_sound_buffer->Unlock(region1, region1_size, region2, region2_size);
-                                        }
-                                }
-
-                                if (!sound_is_playing) {
-                                        // Start playing of sound buffer
-                                        global_secondary_sound_buffer->Play(0,0, DSBPLAY_LOOPING);
-                                        sound_is_playing = true;
+                                        win32_fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write);
                                 }
 
                                 Win32WindowDimension window_dimension =
