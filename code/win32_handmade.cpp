@@ -5,6 +5,7 @@
 
 // TODO Implement sine ourselves
 #include <math.h>
+#include <stdio.h>
 
 // Casey redefines static to use them for the specific
 // use cases to make it more clear
@@ -506,6 +507,12 @@ int CALLBACK WinMain(
                 int show_cmd
                 )
 {
+        // The number of counts that happen per second
+        // Doesn't change after startup
+        LARGE_INTEGER perf_count_frequency_result;
+        QueryPerformanceFrequency(&perf_count_frequency_result);
+        int64 perf_count_frequency = perf_count_frequency_result.QuadPart;
+
         win32_load_x_input();
 
         WNDCLASSA window_class = {0};
@@ -527,6 +534,7 @@ int CALLBACK WinMain(
         window_class.hInstance = instance;
         //window_class.hIcon =;
         window_class.lpszClassName = "HandmadeHeroWindowClass";
+
 
         // Register the window class so it can be called in CreateWindow
         // by the className
@@ -568,6 +576,13 @@ int CALLBACK WinMain(
                         // jsut get one device context and use it forever
                         // becuase we are not sharing it with anyone.
                         HDC device_context = GetDC(window);
+
+                        // Get start timestamp (microsecond percision)
+                        LARGE_INTEGER last_counter;
+                        QueryPerformanceCounter(&last_counter);
+
+                        // The number of processor clock cycles done since the last reset
+                        uint64 last_cycle_count = __rdtsc();
 
                         while(global_running) {
                                 // Windows does not send messages.
@@ -676,6 +691,31 @@ int CALLBACK WinMain(
                                                 window_dimension.width, window_dimension.height,
                                                 &global_back_buffer);
 
+                                uint64 end_cycle_count = __rdtsc();
+
+                                // Log the end time and compute the total time elapsed,
+                                // FPS, and total CPU cycle count for the main loop
+                                LARGE_INTEGER end_counter;
+                                QueryPerformanceCounter(&end_counter);
+
+                                uint64 cycles_elapsed = end_cycle_count - last_cycle_count;
+                                int64 counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
+                                real64 milliseconds_per_frame = (real64)(((1000.0f * (real64)counter_elapsed) / (real64)perf_count_frequency));
+                                real64 frames_per_second = (real64)perf_count_frequency / (real64)counter_elapsed;
+                                // Our number of cycles be a lot per frame, so we divide to
+                                // get number of mega cycles
+                                real64 mega_cycles_per_frame = (((real64)cycles_elapsed) / ((real64)1000.0f * (real64)1000.0f));
+
+                                char buffer[256];
+                                sprintf(buffer, "Milliseconds/frame: %fms/f, %f F/s, %f mc/f \n",
+                                                milliseconds_per_frame,
+                                                frames_per_second,
+                                                mega_cycles_per_frame);
+
+                                OutputDebugStringA(buffer);
+                                // Set last counter/last_cycle_count for the next frame comparison
+                                last_counter = end_counter;
+                                last_cycle_count = end_cycle_count;
                         }
                 } else {
                         // TODO logging
