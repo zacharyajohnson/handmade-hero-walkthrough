@@ -1,10 +1,22 @@
-#include <windows.h>
-#include <stdint.h>
-#include <xinput.h>
-#include <dsound.h>
-
-// TODO Implement sine ourselves
-#include <math.h>
+/*
+ * TODO: THIS IS NOT A FINAL PLATFORM LAYER
+ * - Saved Game Locations
+ * - Getting a handle to our own executable file
+ * - Asset loading path
+ * - Threading (launch a thread)
+ * - Raw Input (support for multiple keyboards)
+ * - Sleep/timeBeginPeriod
+ * - ClipCursor() (for multimonitor support)
+ * - Fullscreen support
+ * - WM_SETCURSOR (control cursor visibility)
+ * - QueryCancelAutoPlay
+ * - WM_ACTIVEAPP( for when we are not the active application)
+ * - Blit speed improvements(BitBlt)
+ * - Hardware acceleration (OpenGL or Direct3D or BOTH??)
+ * - GetKeyboardLayout (For French keyboards, international WASD support)
+ *
+ * Just a partial list of stuff
+ */
 #include <stdio.h>
 
 // Casey redefines static to use them for the specific
@@ -31,6 +43,25 @@ typedef uint64_t uint64;
 
 typedef float real32;
 typedef double real64;
+
+// TODO For now these have to be here so the static
+// defines are defined before the files. If we
+// try to put these up top, the compiler complains
+// This will be abstracted out better later
+#include "handmade.h"
+#include "handmade.cpp"
+
+// Move windows headers down
+// so we don't accidently call
+// any of the functions in our
+// platform independent code
+#include <windows.h>
+#include <stdint.h>
+#include <xinput.h>
+#include <dsound.h>
+
+// TODO Implement sine ourselves
+#include <math.h>
 
 struct Win32SoundOutput {
         // NOTE: Sound test
@@ -105,6 +136,11 @@ typedef DIRECT_SOUND_CREATE(direct_sound_create);
 global_variable bool32 global_running;
 global_variable Win32OffscreenBuffer global_back_buffer;
 global_variable LPDIRECTSOUNDBUFFER global_secondary_sound_buffer;
+
+void* platform_load_file(char *file_name) {
+        // NOTE: Implements the Win32 file loading
+        return 0;
+}
 
 internal void win32_fill_sound_buffer(Win32SoundOutput *sound_output, DWORD byte_to_lock, DWORD bytes_to_write) {
         VOID *region1;
@@ -288,42 +324,6 @@ internal Win32WindowDimension get_window_dimension(HWND window) {
         result.height = client_rect.bottom - client_rect.top;
 
         return result;
-}
-
-internal void render_weird_gradient(Win32OffscreenBuffer *buffer,
-                int blue_offset, int green_offset) {
-
-        uint8 *row = (uint8 *)buffer->memory;
-
-        for (int y = 0; y < buffer->height; y++) {
-
-                uint32 *pixel = (uint32 *)row;
-                for (int x = 0; x < buffer->width; x++) {
-                        // LITTLE ENDIAN ARCHITECTURE
-                        // Pixel in memory: BB GG RR xx
-                        // The byte in  the lowest memory address becomes
-                        // the lowest byte in the CPU.
-                        // Pixel in CPU: xx RR GG BB
-                        // Windows starts the blue channel
-                        // first so when it gets swapped into the CPU,
-                        // the RGB values are listed as expected since they
-                        // started out on a little endian architecture.
-                        uint8 blue = (x + blue_offset);
-                        uint8 green = (y + green_offset);
-
-                        *pixel = ((green << 8) | blue);
-                        pixel++;
-
-                }
-
-                // We do this at the end even though we are
-                // naturally iterating through the pixels
-                // above because a bitmap can have padding
-                // at the end. This effectivly means that
-                // the pitch for a row can be greater than
-                // the width of the image we are trying to draw.
-                row += buffer->pitch;
-        }
 }
 
 // Everytime we resize the window,
@@ -641,8 +641,13 @@ int CALLBACK WinMain(
                                         }
                                 }
 
-                                render_weird_gradient(&global_back_buffer,
-                                                blue_offset, green_offset);
+                                GameOffscreenBuffer buffer = {};
+                                buffer.memory = global_back_buffer.memory;
+                                buffer.width = global_back_buffer.width;
+                                buffer.height = global_back_buffer.height;
+                                buffer.pitch = global_back_buffer.pitch;
+
+                                game_update_and_render(&buffer, blue_offset, green_offset);
 
                                 // NOTE: DirectSound output test
                                 // Locks the sound buffer
@@ -705,7 +710,7 @@ int CALLBACK WinMain(
                                 // Our number of cycles be a lot per frame, so we divide to
                                 // get number of mega cycles
                                 real64 mega_cycles_per_frame = (((real64)cycles_elapsed) / ((real64)1000.0f * (real64)1000.0f));
-
+#if 0
                                 char buffer[256];
                                 sprintf(buffer, "Milliseconds/frame: %fms/f, %f F/s, %f mc/f \n",
                                                 milliseconds_per_frame,
@@ -713,6 +718,7 @@ int CALLBACK WinMain(
                                                 mega_cycles_per_frame);
 
                                 OutputDebugStringA(buffer);
+#endif
                                 // Set last counter/last_cycle_count for the next frame comparison
                                 last_counter = end_counter;
                                 last_cycle_count = end_cycle_count;
