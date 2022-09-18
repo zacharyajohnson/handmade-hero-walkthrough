@@ -6,7 +6,7 @@ call ..\misc\shell.bat
 REM Create build dir at root of project and set
 REM current working dir to build
 
-mkdir ..\build
+IF NOT EXIST ..\build mkdir ..\build
 pushd ..\build
 
 REM Compiles the source code using MSVC
