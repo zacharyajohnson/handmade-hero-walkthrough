@@ -67,35 +67,7 @@ typedef double real64;
 #include <dsound.h>
 #include <stdio.h>
 
-
-struct Win32SoundOutput {
-        // NOTE: Sound test
-        int samples_per_second;
-        int bytes_per_sample;
-        int tone_hertz;
-        int tone_volume;
-        uint32 running_sample_index;
-        int wave_period;
-        int secondary_buffer_size;
-        real32 t_sine;
-        int latency_sample_count;
-};
-
-struct Win32OffscreenBuffer {
-        // NOTE: Pixels are always 32-bits wide,
-        // Memory Order BB GG RR xx
-        BITMAPINFO info;
-        void *memory;
-        int width;
-        int height;
-        int pitch;
-};
-
-struct Win32WindowDimension {
-        int width;
-        int height;
-};
-
+#include "win32_handmade.h"
 // Macro used to generate our function signatures for the Xinput functions
 // we want to dynamically pull in.
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
@@ -448,10 +420,20 @@ internal void win32_display_buffer_in_window(HDC device_context,
 
 }
 
-LRESULT CALLBACK win32_main_window_callback(HWND window,
-                UINT message,
-                WPARAM w_param,
-                LPARAM l_param)
+internal void
+win32_process_x_input_digital_button(GameButtonState *old_state,
+                               GameButtonState       *new_state,
+                               DWORD                  x_input_button_state,
+                               DWORD                  button_bit)
+{
+        new_state->ended_down = ((x_input_button_state & button_bit) == button_bit);
+        new_state->half_transition_count = (old_state->ended_down != new_state->ended_down) ? 1 : 0;
+}
+
+LRESULT CALLBACK win32_main_window_callback(HWND   window,
+                                            UINT   message,
+                                            WPARAM w_param,
+                                            LPARAM l_param)
 {
         // Return code for result of processing the message
         // Depends on the message being handled
@@ -594,18 +576,11 @@ int CALLBACK WinMain(
 
                         global_running = true;
 
-                        // NOTE: Graphics test
-                        int blue_offset = 0;
-                        int green_offset = 0;
-
                         // NOTE: Sound test
                         Win32SoundOutput sound_output = {};
                         sound_output.samples_per_second = 48000;
                         sound_output.bytes_per_sample = sizeof(int16)* 2;
-                        sound_output.tone_hertz = 256;
-                        sound_output.tone_volume = 3000;
                         sound_output.running_sample_index = 0;
-                        sound_output.wave_period = sound_output.samples_per_second/sound_output.tone_hertz;
                         sound_output.secondary_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
                         sound_output.latency_sample_count = sound_output.samples_per_second / 15;
 
@@ -629,11 +604,17 @@ int CALLBACK WinMain(
                         // The number of processor clock cycles done since the last reset
                         uint64 last_cycle_count = __rdtsc();
 
+                        GameInput input[2] = {};
+
+                        GameInput *new_input = &input[0];
+                        GameInput *old_input = &input[1];
+
                         while(global_running) {
                                 // Windows does not send messages.
                                 // We have to extract them from the message queue
                                 // and send it to our windows procedure manually.
                                 MSG message;
+
                                 while(PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
                                         // If windows decides to randomly kill our
                                         // process, quit
@@ -648,10 +629,23 @@ int CALLBACK WinMain(
                                 // XUSER_MAX_COUNT - The number of xbox controllers
                                 // that can be used at once(Usually 4)
                                 // TODO Should we poll this more frequently?
+                                int max_controller_count = XUSER_MAX_COUNT;
+
+                                // If for some reason x input adds more controller input in
+                                // the future, set the number of controllers to what we have
+                                // in our game input struct so we aren't going out of bounds
+                                // in our array
+                                if (max_controller_count > array_count(new_input->controllers)) {
+                                        max_controller_count = array_count(new_input->controllers);
+                                }
+
                                 for (DWORD controller_index = 0;
-                                                controller_index < XUSER_MAX_COUNT;
+                                                controller_index < max_controller_count;
                                                 controller_index++)
                                 {
+                                        GameControllerInput *old_controller = &old_input->controllers[controller_index];
+                                        GameControllerInput *new_controller = &new_input->controllers[controller_index];
+
                                         XINPUT_STATE controller_state;
 
                                         if (XInputGetState(controller_index, &controller_state)
@@ -660,27 +654,66 @@ int CALLBACK WinMain(
                                                 // If the controller is active get the state of it
                                                 XINPUT_GAMEPAD *gamepad = &controller_state.Gamepad;
 
+                                                //TODO: Dpad
                                                 bool32 up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
                                                 bool32 down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
                                                 bool32 left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
                                                 bool32 right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
-                                                bool32 start = gamepad->wButtons & XINPUT_GAMEPAD_START;
-                                                bool32 back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
-                                                bool32 left_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
-                                                bool32 right_shoulder = gamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
-                                                bool32 a_button = gamepad->wButtons & XINPUT_GAMEPAD_A;
-                                                bool32 b_button = gamepad->wButtons & XINPUT_GAMEPAD_B;
-                                                bool32 x_button = gamepad->wButtons & XINPUT_GAMEPAD_X;
-                                                bool32 y_button = gamepad->wButtons & XINPUT_GAMEPAD_Y;
 
-                                                int16 left_stick_x = gamepad->sThumbLX;
-                                                int16 left_stick_y = gamepad->sThumbLY;
+                                                new_controller->is_analog = true;
+                                                new_controller->start_x = old_controller->end_x;
+                                                new_controller->start_y = old_controller->end_y;
 
-                                                blue_offset += left_stick_x / 4096;
-                                                green_offset += left_stick_y / 4096;
+                                                real32 x;
+                                                if (gamepad->sThumbLX < 0) {
+                                                        x = (real32)gamepad->sThumbLX / 32768.0f;
+                                                } else {
+                                                        x = (real32)gamepad->sThumbLX / 32767.0f;
+                                                }
 
-                                                sound_output.tone_hertz = 512 + (int)(256.0f * ((real32)left_stick_y / 30000.0f));
-                                                sound_output.wave_period = sound_output.samples_per_second / sound_output.tone_hertz;
+                                                new_controller->min_x = new_controller->max_x = new_controller->end_x = x;
+
+
+                                                real32 y;
+                                                if (gamepad->sThumbLY < 0) {
+                                                        y = (real32)gamepad->sThumbLY / 32768.0f;
+                                                } else {
+                                                        x = (real32)gamepad->sThumbLY / 32767.0f;
+                                                }
+
+                                                new_controller->min_y = new_controller->max_y = new_controller->end_y = y;
+
+                                                win32_process_x_input_digital_button(&old_controller->down,
+                                                                                     &new_controller->down,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_A);
+
+                                                win32_process_x_input_digital_button(&old_controller->right,
+                                                                                     &new_controller->right,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_B);
+
+                                                win32_process_x_input_digital_button(&old_controller->left,
+                                                                                     &new_controller->left,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_X);
+
+                                                win32_process_x_input_digital_button(&old_controller->up,
+                                                                                     &new_controller->up,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_Y);
+
+                                                win32_process_x_input_digital_button(&old_controller->left_shoulder,
+                                                                                     &new_controller->left_shoulder,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_LEFT_SHOULDER);
+
+                                                win32_process_x_input_digital_button(&old_controller->right_shoulder,
+                                                                                     &new_controller->right_shoulder,
+                                                                                     gamepad->wButtons,
+                                                                                     XINPUT_GAMEPAD_RIGHT_SHOULDER);
+                                               // bool32 start = gamepad->wButtons & XINPUT_GAMEPAD_START;
+                                               // bool32 back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
                                         } else {
                                                 // NOTE: the controller is not avaliable
                                         }
@@ -739,7 +772,7 @@ int CALLBACK WinMain(
                                 buffer.height = global_back_buffer.height;
                                 buffer.pitch = global_back_buffer.pitch;
 
-                                game_update_and_render(&buffer, blue_offset, green_offset, &sound_buffer, sound_output.tone_hertz);
+                                game_update_and_render(&buffer, &sound_buffer, new_input);
 
                                 // NOTE: DirectSound output test
                                 if (sound_is_valid) {
@@ -779,6 +812,10 @@ int CALLBACK WinMain(
                                 // Set last counter/last_cycle_count for the next frame comparison
                                 last_counter = end_counter;
                                 last_cycle_count = end_cycle_count;
+
+                                GameInput *temp = new_input;
+                                new_input = old_input;
+                                old_input = temp;
                         }
                 } else {
                         // TODO logging
