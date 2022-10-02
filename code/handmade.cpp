@@ -63,30 +63,45 @@ render_weird_gradient(GameOffscreenBuffer *buffer,
 }
 
 internal void
-game_update_and_render(GameOffscreenBuffer   *buffer,
+game_update_and_render(GameMemory            *memory,
+                       GameOffscreenBuffer   *buffer,
                        GameSoundOutputBuffer *sound_buffer,
                        GameInput             *input)
 {
-        local_persist int blue_offset = 0;
-        local_persist int green_offset = 0;
-        local_persist int tone_hertz = 256;
+        // Assert our game state can fit in our memory
+        assert(sizeof(GameState) <= memory->permanent_storage_size);
+
+        GameState *game_state = (GameState *) memory->permanent_storage;
+
+        // If this is the first time through our render loop,
+        // initalize to default values
+        if(!memory->is_initialized) {
+                game_state->blue_offset = 0;
+                game_state->green_offset = 0;
+                game_state->tone_hertz = 256;
+                memory->is_initialized=true;
+        }
 
         // Player 1
         GameControllerInput *input0 = &input->controllers[0];
         if(input0->is_analog) {
                 // NOTE: Use analog movment tuning
-                blue_offset += (int)4.0f * (input0->end_x);
-                tone_hertz = 256 + (int)(128.0f * (input0->end_y));
+                game_state->blue_offset += (int)4.0f * (input0->end_x);
+                game_state->tone_hertz = 256 + (int)(128.0f * (input0->end_y));
         } else {
                 // NOTE: Use digital movement tuning
         }
 
         if(input0->down.ended_down) {
-                green_offset += 1;
+                game_state->green_offset += 1;
         }
 
 
         //TODO: Allow sample offsets here for more robust platform options
-        game_output_sound(sound_buffer, tone_hertz);
-        render_weird_gradient(buffer, blue_offset, green_offset);
+        game_output_sound(sound_buffer,
+                          game_state->tone_hertz);
+
+        render_weird_gradient(buffer,
+                              game_state->blue_offset,
+                              game_state->green_offset);
 }

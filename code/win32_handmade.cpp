@@ -597,225 +597,260 @@ int CALLBACK WinMain(
                         // becuase we are not sharing it with anyone.
                         HDC device_context = GetDC(window);
 
-                        // Get start timestamp (microsecond percision)
-                        LARGE_INTEGER last_counter;
-                        QueryPerformanceCounter(&last_counter);
 
-                        // The number of processor clock cycles done since the last reset
-                        uint64 last_cycle_count = __rdtsc();
-
-                        GameInput input[2] = {};
-
-                        GameInput *new_input = &input[0];
-                        GameInput *old_input = &input[1];
-
-                        while(global_running) {
-                                // Windows does not send messages.
-                                // We have to extract them from the message queue
-                                // and send it to our windows procedure manually.
-                                MSG message;
-
-                                while(PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
-                                        // If windows decides to randomly kill our
-                                        // process, quit
-                                        if (message.message == WM_QUIT) {
-                                                global_running = false;
-                                        }
-
-                                        TranslateMessage(&message);
-                                        DispatchMessage(&message);
-                                }
-
-                                // XUSER_MAX_COUNT - The number of xbox controllers
-                                // that can be used at once(Usually 4)
-                                // TODO Should we poll this more frequently?
-                                int max_controller_count = XUSER_MAX_COUNT;
-
-                                // If for some reason x input adds more controller input in
-                                // the future, set the number of controllers to what we have
-                                // in our game input struct so we aren't going out of bounds
-                                // in our array
-                                if (max_controller_count > array_count(new_input->controllers)) {
-                                        max_controller_count = array_count(new_input->controllers);
-                                }
-
-                                for (DWORD controller_index = 0;
-                                                controller_index < max_controller_count;
-                                                controller_index++)
-                                {
-                                        GameControllerInput *old_controller = &old_input->controllers[controller_index];
-                                        GameControllerInput *new_controller = &new_input->controllers[controller_index];
-
-                                        XINPUT_STATE controller_state;
-
-                                        if (XInputGetState(controller_index, &controller_state)
-                                                        == ERROR_SUCCESS)
-                                        {
-                                                // If the controller is active get the state of it
-                                                XINPUT_GAMEPAD *gamepad = &controller_state.Gamepad;
-
-                                                //TODO: Dpad
-                                                bool32 up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
-                                                bool32 down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
-                                                bool32 left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
-                                                bool32 right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
-
-                                                new_controller->is_analog = true;
-                                                new_controller->start_x = old_controller->end_x;
-                                                new_controller->start_y = old_controller->end_y;
-
-                                                real32 x;
-                                                if (gamepad->sThumbLX < 0) {
-                                                        x = (real32)gamepad->sThumbLX / 32768.0f;
-                                                } else {
-                                                        x = (real32)gamepad->sThumbLX / 32767.0f;
-                                                }
-
-                                                new_controller->min_x = new_controller->max_x = new_controller->end_x = x;
-
-
-                                                real32 y;
-                                                if (gamepad->sThumbLY < 0) {
-                                                        y = (real32)gamepad->sThumbLY / 32768.0f;
-                                                } else {
-                                                        x = (real32)gamepad->sThumbLY / 32767.0f;
-                                                }
-
-                                                new_controller->min_y = new_controller->max_y = new_controller->end_y = y;
-
-                                                win32_process_x_input_digital_button(&old_controller->down,
-                                                                                     &new_controller->down,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_A);
-
-                                                win32_process_x_input_digital_button(&old_controller->right,
-                                                                                     &new_controller->right,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_B);
-
-                                                win32_process_x_input_digital_button(&old_controller->left,
-                                                                                     &new_controller->left,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_X);
-
-                                                win32_process_x_input_digital_button(&old_controller->up,
-                                                                                     &new_controller->up,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_Y);
-
-                                                win32_process_x_input_digital_button(&old_controller->left_shoulder,
-                                                                                     &new_controller->left_shoulder,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_LEFT_SHOULDER);
-
-                                                win32_process_x_input_digital_button(&old_controller->right_shoulder,
-                                                                                     &new_controller->right_shoulder,
-                                                                                     gamepad->wButtons,
-                                                                                     XINPUT_GAMEPAD_RIGHT_SHOULDER);
-                                               // bool32 start = gamepad->wButtons & XINPUT_GAMEPAD_START;
-                                               // bool32 back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
-                                        } else {
-                                                // NOTE: the controller is not avaliable
-                                        }
-                                }
-
-                                // Locks the sound buffer
-                                // and returns the regions of memory we can write
-                                // to. There are two regions just in case
-                                // the first region that is locked is not big
-                                // enough and hits the end of the sound memory.
-                                // If that is the case, we loop back to the
-                                // beginning of the sound buffer and that
-                                // region of memory is stored in the second
-                                // region
-
-                                // Our sound buffer is sterio, which
-                                // means dual channels. Each channel
-                                // takes a int16 for the sample
-                                // The buffer has
-                                // the format: LEFT RIGHT LEFT RIGHT LEFT RIGHT
-                                // where LEFT and RIGHT are a sample.
-                                // To make sense for sterio, we want to
-                                // handle one [LEFT RIGHT] group as a single
-                                // sample
-                                DWORD byte_to_lock = 0;
-                                DWORD target_cursor = 0;
-                                DWORD bytes_to_write = 0;
-                                DWORD write_cursor = 0;
-                                DWORD play_cursor = 0;
-                                bool32 sound_is_valid = false;
-                                if (SUCCEEDED(global_secondary_sound_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
-                                        byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
-
-                                        target_cursor = (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample))
-                                                % sound_output.secondary_buffer_size;
-                                        if (byte_to_lock > target_cursor) {
-                                                bytes_to_write = (sound_output.secondary_buffer_size - byte_to_lock);
-                                                bytes_to_write += target_cursor;
-                                        } else {
-                                                bytes_to_write = (target_cursor - byte_to_lock);
-                                        }
-
-                                        sound_is_valid = true;
-
-                                }
-
-                                GameSoundOutputBuffer sound_buffer = {};
-                                sound_buffer.samples_per_second = sound_output.samples_per_second;
-
-                                sound_buffer.sample_count = bytes_to_write / sound_output.bytes_per_sample;
-                                sound_buffer.samples = samples;
-
-                                GameOffscreenBuffer buffer = {};
-                                buffer.memory = global_back_buffer.memory;
-                                buffer.width = global_back_buffer.width;
-                                buffer.height = global_back_buffer.height;
-                                buffer.pitch = global_back_buffer.pitch;
-
-                                game_update_and_render(&buffer, &sound_buffer, new_input);
-
-                                // NOTE: DirectSound output test
-                                if (sound_is_valid) {
-                                        win32_fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
-                                }
-
-                                Win32WindowDimension window_dimension =
-                                        get_window_dimension(window);
-
-                                win32_display_buffer_in_window(device_context,
-                                                window_dimension.width, window_dimension.height,
-                                                &global_back_buffer);
-
-                                uint64 end_cycle_count = __rdtsc();
-
-                                // Log the end time and compute the total time elapsed,
-                                // FPS, and total CPU cycle count for the main loop
-                                LARGE_INTEGER end_counter;
-                                QueryPerformanceCounter(&end_counter);
-
-                                uint64 cycles_elapsed = end_cycle_count - last_cycle_count;
-                                int64 counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
-                                real64 milliseconds_per_frame = (real64)(((1000.0f * (real64)counter_elapsed) / (real64)perf_count_frequency));
-                                real64 frames_per_second = (real64)perf_count_frequency / (real64)counter_elapsed;
-                                // Our number of cycles be a lot per frame, so we divide to
-                                // get number of mega cycles
-                                real64 mega_cycles_per_frame = (((real64)cycles_elapsed) / ((real64)1000.0f * (real64)1000.0f));
-#if 0
-                                char buffer[256];
-                                sprintf(buffer, "Milliseconds/frame: %fms/f, %f F/s, %f mc/f \n",
-                                                milliseconds_per_frame,
-                                                frames_per_second,
-                                                mega_cycles_per_frame);
-
-                                OutputDebugStringA(buffer);
+                        // If we are compiling on our machine set our base address
+                        // for our game memory to constant so its easier to debug.
+                        // If a commerical version, set it to NULL so windows
+                        // can set the the starting memory address to whatever
+                        // it wants
+#if HADMADE_INTERNAL
+                        LPVOID base_address = (LPVOID)terabytes(2);
+#else
+                        LPVOID base_address = NULL;
 #endif
-                                // Set last counter/last_cycle_count for the next frame comparison
-                                last_counter = end_counter;
-                                last_cycle_count = end_cycle_count;
 
-                                GameInput *temp = new_input;
-                                new_input = old_input;
-                                old_input = temp;
+                        GameMemory game_memory = {};
+                        game_memory.permanent_storage_size = megabytes(64);
+                        game_memory.transient_storage_size = gigabytes(4);
+
+                        uint64 total_size = game_memory.permanent_storage_size + game_memory.transient_storage_size;
+
+                        game_memory.permanent_storage = VirtualAlloc(base_address,
+                                                                     total_size,
+                                                                     MEM_RESERVE | MEM_COMMIT,
+                                                                     PAGE_READWRITE);
+                        game_memory.transient_storage = ((uint8 *) game_memory.permanent_storage
+                                        + game_memory.permanent_storage_size);
+
+                        if (samples != NULL
+                                        && game_memory.permanent_storage != NULL
+                                        && game_memory.transient_storage != NULL)
+                        {
+                                // Get start timestamp (microsecond percision)
+                                LARGE_INTEGER last_counter;
+                                QueryPerformanceCounter(&last_counter);
+
+                                // The number of processor clock cycles done since the last reset
+                                uint64 last_cycle_count = __rdtsc();
+
+                                GameInput input[2] = {};
+
+                                GameInput *new_input = &input[0];
+                                GameInput *old_input = &input[1];
+
+                                while(global_running) {
+                                        // Windows does not send messages.
+                                        // We have to extract them from the message queue
+                                        // and send it to our windows procedure manually.
+                                        MSG message;
+
+                                        while(PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
+                                                // If windows decides to randomly kill our
+                                                // process, quit
+                                                if (message.message == WM_QUIT) {
+                                                        global_running = false;
+                                                }
+
+                                                TranslateMessage(&message);
+                                                DispatchMessage(&message);
+                                        }
+
+                                        // XUSER_MAX_COUNT - The number of xbox controllers
+                                        // that can be used at once(Usually 4)
+                                        // TODO Should we poll this more frequently?
+                                        int max_controller_count = XUSER_MAX_COUNT;
+
+                                        // If for some reason x input adds more controller input in
+                                        // the future, set the number of controllers to what we have
+                                        // in our game input struct so we aren't going out of bounds
+                                        // in our array
+                                        if (max_controller_count > array_count(new_input->controllers)) {
+                                                max_controller_count = array_count(new_input->controllers);
+                                        }
+
+                                        for (DWORD controller_index = 0;
+                                                        controller_index < max_controller_count;
+                                                        controller_index++)
+                                        {
+                                                GameControllerInput *old_controller = &old_input->controllers[controller_index];
+                                                GameControllerInput *new_controller = &new_input->controllers[controller_index];
+
+                                                XINPUT_STATE controller_state;
+
+                                                if (XInputGetState(controller_index, &controller_state)
+                                                                == ERROR_SUCCESS)
+                                                {
+                                                        // If the controller is active get the state of it
+                                                        XINPUT_GAMEPAD *gamepad = &controller_state.Gamepad;
+
+                                                        //TODO: Dpad
+                                                        bool32 up = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                                                        bool32 down = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                                                        bool32 left = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                                                        bool32 right = gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+
+                                                        new_controller->is_analog = true;
+                                                        new_controller->start_x = old_controller->end_x;
+                                                        new_controller->start_y = old_controller->end_y;
+
+                                                        real32 x;
+                                                        if (gamepad->sThumbLX < 0) {
+                                                                x = (real32)gamepad->sThumbLX / 32768.0f;
+                                                        } else {
+                                                                x = (real32)gamepad->sThumbLX / 32767.0f;
+                                                        }
+
+                                                        new_controller->min_x = new_controller->max_x = new_controller->end_x = x;
+
+
+                                                        real32 y;
+                                                        if (gamepad->sThumbLY < 0) {
+                                                                y = (real32)gamepad->sThumbLY / 32768.0f;
+                                                        } else {
+                                                                x = (real32)gamepad->sThumbLY / 32767.0f;
+                                                        }
+
+                                                        new_controller->min_y = new_controller->max_y = new_controller->end_y = y;
+
+                                                        win32_process_x_input_digital_button(&old_controller->down,
+                                                                                             &new_controller->down,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_A);
+
+                                                        win32_process_x_input_digital_button(&old_controller->right,
+                                                                                             &new_controller->right,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_B);
+
+                                                        win32_process_x_input_digital_button(&old_controller->left,
+                                                                                             &new_controller->left,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_X);
+
+                                                        win32_process_x_input_digital_button(&old_controller->up,
+                                                                                             &new_controller->up,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_Y);
+
+                                                        win32_process_x_input_digital_button(&old_controller->left_shoulder,
+                                                                                             &new_controller->left_shoulder,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_LEFT_SHOULDER);
+
+                                                        win32_process_x_input_digital_button(&old_controller->right_shoulder,
+                                                                                             &new_controller->right_shoulder,
+                                                                                             gamepad->wButtons,
+                                                                                             XINPUT_GAMEPAD_RIGHT_SHOULDER);
+                                                       // bool32 start = gamepad->wButtons & XINPUT_GAMEPAD_START;
+                                                       // bool32 back = gamepad->wButtons & XINPUT_GAMEPAD_BACK;
+                                                } else {
+                                                        // NOTE: the controller is not avaliable
+                                                }
+                                        }
+
+                                        // Locks the sound buffer
+                                        // and returns the regions of memory we can write
+                                        // to. There are two regions just in case
+                                        // the first region that is locked is not big
+                                        // enough and hits the end of the sound memory.
+                                        // If that is the case, we loop back to the
+                                        // beginning of the sound buffer and that
+                                        // region of memory is stored in the second
+                                        // region
+
+                                        // Our sound buffer is sterio, which
+                                        // means dual channels. Each channel
+                                        // takes a int16 for the sample
+                                        // The buffer has
+                                        // the format: LEFT RIGHT LEFT RIGHT LEFT RIGHT
+                                        // where LEFT and RIGHT are a sample.
+                                        // To make sense for sterio, we want to
+                                        // handle one [LEFT RIGHT] group as a single
+                                        // sample
+                                        DWORD byte_to_lock = 0;
+                                        DWORD target_cursor = 0;
+                                        DWORD bytes_to_write = 0;
+                                        DWORD write_cursor = 0;
+                                        DWORD play_cursor = 0;
+                                        bool32 sound_is_valid = false;
+                                        if (SUCCEEDED(global_secondary_sound_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
+                                                byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
+
+                                                target_cursor = (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample))
+                                                        % sound_output.secondary_buffer_size;
+                                                if (byte_to_lock > target_cursor) {
+                                                        bytes_to_write = (sound_output.secondary_buffer_size - byte_to_lock);
+                                                        bytes_to_write += target_cursor;
+                                                } else {
+                                                        bytes_to_write = (target_cursor - byte_to_lock);
+                                                }
+
+                                                sound_is_valid = true;
+
+                                        }
+
+                                        GameSoundOutputBuffer sound_buffer = {};
+                                        sound_buffer.samples_per_second = sound_output.samples_per_second;
+
+                                        sound_buffer.sample_count = bytes_to_write / sound_output.bytes_per_sample;
+                                        sound_buffer.samples = samples;
+
+                                        GameOffscreenBuffer buffer = {};
+                                        buffer.memory = global_back_buffer.memory;
+                                        buffer.width = global_back_buffer.width;
+                                        buffer.height = global_back_buffer.height;
+                                        buffer.pitch = global_back_buffer.pitch;
+
+                                        game_update_and_render(&game_memory,
+                                                               &buffer,
+                                                               &sound_buffer,
+                                                               new_input);
+
+                                        // NOTE: DirectSound output test
+                                        if (sound_is_valid) {
+                                                win32_fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
+                                        }
+
+                                        Win32WindowDimension window_dimension =
+                                                get_window_dimension(window);
+
+                                        win32_display_buffer_in_window(device_context,
+                                                        window_dimension.width, window_dimension.height,
+                                                        &global_back_buffer);
+
+                                        uint64 end_cycle_count = __rdtsc();
+
+                                        // Log the end time and compute the total time elapsed,
+                                        // FPS, and total CPU cycle count for the main loop
+                                        LARGE_INTEGER end_counter;
+                                        QueryPerformanceCounter(&end_counter);
+
+                                        uint64 cycles_elapsed = end_cycle_count - last_cycle_count;
+                                        int64 counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
+                                        real64 milliseconds_per_frame = (real64)(((1000.0f * (real64)counter_elapsed) / (real64)perf_count_frequency));
+                                        real64 frames_per_second = (real64)perf_count_frequency / (real64)counter_elapsed;
+                                        // Our number of cycles be a lot per frame, so we divide to
+                                        // get number of mega cycles
+                                        real64 mega_cycles_per_frame = (((real64)cycles_elapsed) / ((real64)1000.0f * (real64)1000.0f));
+#if 0
+                                        char buffer[256];
+                                        sprintf(buffer, "Milliseconds/frame: %fms/f, %f F/s, %f mc/f \n",
+                                                        milliseconds_per_frame,
+                                                        frames_per_second,
+                                                        mega_cycles_per_frame);
+
+                                        OutputDebugStringA(buffer);
+#endif
+                                        // Set last counter/last_cycle_count for the next frame comparison
+                                        last_counter = end_counter;
+                                        last_cycle_count = end_cycle_count;
+
+                                        GameInput *temp = new_input;
+                                        new_input = old_input;
+                                        old_input = temp;
+                                }
+                        } else {
+                                // TODO logging
                         }
                 } else {
                         // TODO logging
